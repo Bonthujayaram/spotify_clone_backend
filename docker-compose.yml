@@ -1,0 +1,34 @@
+# Local development: MongoDB + this API.
+# The frontend lives in its own repo and runs separately (npm run dev).
+services:
+  mongo:
+    image: mongo:7
+    container_name: echovibe-mongo
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: .
+    container_name: echovibe-backend
+    env_file:
+      - .env
+    environment:
+      # Overrides .env so the container reaches the compose Mongo, not localhost.
+      MONGODB_URI: mongodb://mongo:27017/echovibe
+    ports:
+      - "5000:5000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
