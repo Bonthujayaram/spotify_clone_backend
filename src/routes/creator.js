@@ -3,8 +3,13 @@ import crypto from 'crypto';
 import User from '../models/User.js';
 import CreatorTrackAsset from '../models/CreatorTrackAsset.js';
 import { authenticateToken } from '../middleware/auth.js';
+import { cacheGet, cacheSet } from '../config/cache.js';
 
 const router = express.Router();
+
+// Short: a new upload should show up in browse quickly. Long enough to absorb
+// the repeat hits from someone paging through or re-running the same search.
+const PUBLIC_TRACKS_TTL_SECONDS = 60;
 
 const MAX_AUDIO_BYTES = 12 * 1024 * 1024;
 const MAX_TRACKS_PER_USER = 200;
@@ -183,7 +188,17 @@ router.get('/public-tracks', async (req, res) => {
       match['creatorTracks.genre'] = { $regex: `^${safeGenre}$`, $options: 'i' };
     }
 
-    const entries = await User.aggregate([
+    // Cache the aggregation rows, NOT the finished response: audioUrl is built
+    // from the request host below, so a cached absolute URL would be wrong for
+    // any other origin.
+    const cacheKey = `public-tracks:${limit}:${offset}:${search.toLowerCase()}:${genre.toLowerCase()}`;
+    let entries = await cacheGet(cacheKey);
+
+    if (entries) {
+      res.set('X-Cache', 'HIT');
+    } else {
+      res.set('X-Cache', 'MISS');
+      entries = await User.aggregate([
       { $unwind: '$creatorTracks' },
       { $match: match },
       { $sort: { 'creatorTracks.uploadedAt': -1 } },
@@ -200,7 +215,9 @@ router.get('/public-tracks', async (req, res) => {
           track: '$creatorTracks',
         },
       },
-    ]);
+      ]);
+      await cacheSet(cacheKey, entries, PUBLIC_TRACKS_TTL_SECONDS);
+    }
 
     const tracks = entries.map((entry) => ({
       ...toCreatorTrackResponse(req, entry.track),

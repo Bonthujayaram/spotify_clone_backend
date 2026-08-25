@@ -1,6 +1,13 @@
 import express from 'express';
+import { cacheGet, cacheSet } from '../config/cache.js';
 
 const router = express.Router();
+
+// Lyrics for a given track never change, so this can be cached hard. Misses are
+// cached too (as null) -- without that, every play of an obscure track pays two
+// external lookups again, which is the slow path worth eliminating.
+const LYRICS_TTL_SECONDS = 7 * 24 * 60 * 60;
+const LYRICS_MISS_TTL_SECONDS = 6 * 60 * 60;
 
 const LRCLIB_BASE = 'https://lrclib.net/api';
 const LYRICS_OVH_BASE = 'https://api.lyrics.ovh/v1';
@@ -128,17 +135,22 @@ router.get('/', async (req, res) => {
       return res.json({ lyrics: null });
     }
 
-    const fromLrclib = await fetchFromLrclib(title, normalizedArtist);
-    if (fromLrclib) {
-      return res.json({ lyrics: fromLrclib });
+    const cacheKey = `lyrics:${normalizeTitle(title).toLowerCase()}|${normalizeArtist(normalizedArtist).toLowerCase()}`;
+    const cached = await cacheGet(cacheKey);
+    if (cached !== null) {
+      res.set('X-Cache', 'HIT');
+      return res.json({ lyrics: cached.lyrics });
     }
+    res.set('X-Cache', 'MISS');
 
-    const fromLyricsOvh = await fetchFromLyricsOvh(title, normalizedArtist);
-    if (fromLyricsOvh) {
-      return res.json({ lyrics: fromLyricsOvh });
-    }
+    const found =
+      (await fetchFromLrclib(title, normalizedArtist)) ||
+      (await fetchFromLyricsOvh(title, normalizedArtist)) ||
+      null;
 
-    return res.json({ lyrics: null });
+    await cacheSet(cacheKey, { lyrics: found }, found ? LYRICS_TTL_SECONDS : LYRICS_MISS_TTL_SECONDS);
+
+    return res.json({ lyrics: found });
   } catch (error) {
     console.error('Lyrics route error:', error);
     return res.status(500).json({ message: 'Error fetching lyrics', lyrics: null });

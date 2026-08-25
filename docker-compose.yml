@@ -15,6 +15,19 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7-alpine
+    container_name: echovibe-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
   backend:
     build: .
     container_name: echovibe-backend
@@ -23,10 +36,13 @@ services:
     environment:
       # Overrides .env so the container reaches the compose Mongo, not localhost.
       MONGODB_URI: mongodb://mongo:27017/echovibe
+      REDIS_URL: redis://redis:6379
     ports:
       - "5000:5000"
     depends_on:
       mongo:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: unless-stopped
 
