@@ -91,10 +91,19 @@ const userSchema = new mongoose.Schema(
       trim: true,
       lowercase: true,
     },
+    // Optional: Firebase-authenticated users have no local password. Only
+    // legacy email/password accounts store a bcrypt hash here.
     password: {
       type: String,
-      required: true,
       minlength: 6,
+    },
+    firebaseUid: {
+      type: String,
+      // sparse: many users predate Firebase and have no uid, and a unique
+      // index would otherwise collide on null.
+      unique: true,
+      sparse: true,
+      index: true,
     },
     name: {
       type: String,
@@ -213,11 +222,9 @@ userSchema.pre('save', async function (next) {
 
 // Method to compare password
 userSchema.methods.comparePassword = async function (candidatePassword) {
-  try {
-    return await bcrypt.compare(candidatePassword, this.password);
-  } catch (error) {
-    throw error;
-  }
+  // Firebase-only accounts have no hash; nothing can match it.
+  if (!this.password || !candidatePassword) return false;
+  return bcrypt.compare(candidatePassword, this.password);
 };
 
 const User = mongoose.model('User', userSchema);

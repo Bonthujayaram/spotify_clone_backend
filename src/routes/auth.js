@@ -3,6 +3,7 @@ import crypto from 'node:crypto';
 import rateLimit from 'express-rate-limit';
 import User from '../models/User.js';
 import { authenticateToken, signToken } from '../middleware/auth.js';
+import { verifyFirebaseIdToken } from '../config/firebase.js';
 
 export const router = express.Router();
 
@@ -309,6 +310,66 @@ router.post('/like-song', authenticateToken, async (req, res) => {
 // Get liked songs
 router.get('/liked-songs', authenticateToken, (req, res) => {
   res.json({ likedSongs: formatLikedSongs(req.user.likedSongs) });
+});
+
+// Firebase sign-in. The client authenticates with Firebase (email/password,
+// Google, Apple) and posts the resulting ID token here; we verify it and hand
+// back this app's own JWT, so every other route keeps working unchanged.
+router.post('/firebase', credentialLimiter, async (req, res) => {
+  try {
+    const { idToken } = req.body || {};
+    if (!idToken) return res.status(400).json({ message: 'idToken is required' });
+
+    let claims;
+    try {
+      claims = await verifyFirebaseIdToken(idToken);
+    } catch (error) {
+      if (error.code === 'firebase/not-configured') {
+        console.error('Firebase sign-in attempted but FIREBASE_PROJECT_ID is unset');
+        return res.status(503).json({ message: 'Firebase sign-in is not configured on the server' });
+      }
+      return res.status(401).json({ message: 'Invalid or expired Firebase token' });
+    }
+
+    if (!claims.email) {
+      return res.status(400).json({ message: 'This sign-in method did not provide an email address' });
+    }
+
+    // Match on uid first, then fall back to email so accounts that predate
+    // Firebase (or were created with a different provider) link up instead of
+    // silently becoming a duplicate profile.
+    let user = await User.findOne({ firebaseUid: claims.uid });
+    if (!user) {
+      user = await User.findOne({ email: claims.email });
+    }
+
+    if (!user) {
+      user = new User({
+        email: claims.email,
+        name: claims.name || claims.email.split('@')[0],
+        profilePicture: claims.picture || '',
+        firebaseUid: claims.uid,
+        isGoogleUser: claims.provider === 'google.com',
+      });
+    } else {
+      if (!user.firebaseUid) user.firebaseUid = claims.uid;
+      // Only fill gaps -- never overwrite a name or picture the user has set here.
+      if (!user.name && claims.name) user.name = claims.name;
+      if (!user.profilePicture && claims.picture) user.profilePicture = claims.picture;
+      if (claims.provider === 'google.com') user.isGoogleUser = true;
+    }
+
+    if (!user.settings) user.settings = {};
+    if (!user.settings.connectedAccounts) user.settings.connectedAccounts = {};
+    if (claims.provider === 'google.com') user.settings.connectedAccounts.google = true;
+
+    await user.save();
+
+    res.json({ token: signToken(user._id), user: formatUserResponse(user) });
+  } catch (error) {
+    console.error('Firebase sign-in error:', error.message);
+    res.status(500).json({ message: 'Error signing in' });
+  }
 });
 
 // Google sign-in via ID token (from Google Identity Services)
