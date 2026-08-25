@@ -27,18 +27,27 @@ const PORT = process.env.PORT || 5000;
 app.set('trust proxy', 1);
 
 // Comma-separated list of allowed origins.
+//
+// Normalised before comparing: a browser's Origin header is scheme://host:port
+// with no trailing slash, but people habitually paste the site URL with one
+// ("https://example.com/"). That mismatch blocks every request and surfaces in
+// the browser only as an opaque "Failed to fetch", so be forgiving here rather
+// than making it a config trap.
+const normalizeOrigin = (value) => String(value).trim().replace(/\/+$/, '').toLowerCase();
+
 const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173')
   .split(',')
-  .map((o) => o.trim())
+  .map(normalizeOrigin)
   .filter(Boolean);
 
 app.use(cors({
   origin: (incomingOrigin, callback) => {
     // No Origin header = same-origin or a non-browser client (curl, mobile).
     if (!incomingOrigin) return callback(null, true);
-    if (allowedOrigins.includes('*') || allowedOrigins.includes(incomingOrigin)) {
+    if (allowedOrigins.includes('*') || allowedOrigins.includes(normalizeOrigin(incomingOrigin))) {
       return callback(null, true);
     }
+    console.warn(`CORS blocked origin: ${incomingOrigin} (allowed: ${allowedOrigins.join(', ') || 'none'})`);
     return callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
